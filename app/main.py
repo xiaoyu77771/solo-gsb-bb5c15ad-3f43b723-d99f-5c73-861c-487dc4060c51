@@ -6,11 +6,14 @@ from fastapi import FastAPI, HTTPException
 from .balancer import BalanceError, balance_equation, verify_coefficients
 from .formula_infer import FormulaInferError, NoSolutionError, infer_formula
 from .parser import FormulaError
+from .redox import RedoxInputError, balance_redox
 from .schemas import (
     BalanceRequest,
     BalanceResponse,
     FormulaInferRequest,
     FormulaInferResponse,
+    RedoxBalanceRequest,
+    RedoxBalanceResponse,
     StoichiometryPlanRequest,
     StoichiometryPlanResponse,
     StoichiometryRequest,
@@ -28,12 +31,13 @@ app = FastAPI(
     title="化学方程式配平 API",
     description=(
         "基于元素守恒矩阵（含电荷行）与有理数高斯消元零空间的精确配平服务。"
-        "支持嵌套括号、点号结晶水与末尾离子电荷；并提供基于内置原子量表的"
+        "支持嵌套括号、点号结晶水与末尾离子电荷；并提供氧化还原反应自动补全"
+        "（仅引入 H2O、H+、OH- 补齐守恒，支持酸性/碱性介质）、基于内置原子量表的"
         "化学计量计算（限制反应物、理论产量与剩余量）、反应批次投料规划"
         "（由目标产量与收率反推各原料称量），以及由元素质量百分比"
         "反推经验式/分子式的推断接口。"
     ),
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -57,6 +61,39 @@ def balance(req: BalanceRequest) -> dict:
         return balance_equation(req.reactants, req.products)
     except FormulaError as exc:
         raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+    except BalanceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": exc.message, "null_space_dim": exc.nullity},
+        ) from exc
+
+
+@app.post(
+    "/api/v1/redox/balance",
+    response_model=RedoxBalanceResponse,
+    tags=["redox"],
+    summary="氧化还原反应自动补全配平（酸性/碱性介质）",
+    responses={
+        400: {
+            "description": (
+                "化学式无法解析，或已知物种与自动补全物种（H2O/H+/OH-）重复"
+            )
+        },
+        422: {
+            "description": (
+                "无法补全（无非零解或已知物种系数无法全正），"
+                "或存在多组最简解而无法唯一判定"
+            )
+        },
+    },
+)
+def redox_balance(req: RedoxBalanceRequest) -> dict:
+    try:
+        return balance_redox(req.reactants, req.products, req.medium)
+    except FormulaError as exc:
+        raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+    except RedoxInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except BalanceError as exc:
         raise HTTPException(
             status_code=422,

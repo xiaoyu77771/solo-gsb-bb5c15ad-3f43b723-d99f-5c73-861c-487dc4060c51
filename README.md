@@ -2,6 +2,8 @@
 
 基于 FastAPI 的化学方程式配平服务。服务端为反应物/生成物构建**元素守恒矩阵（含电荷行）**，用**有理数高斯消元**求零空间；仅当零空间为一维且基向量可化为全正时，返回最大公约数约简后的**最小正整数系数**及逐元素、电荷核算，否则返回 `422` 并说明原因（零空间维数或无法全正）。
 
+另提供**氧化还原自动补全接口**：已知物种两侧不必守恒，服务在**不改变已知物种所在侧**的前提下，仅引入 `H2O`、`H+`（酸性）或 `H2O`、`OH-`（碱性）补齐元素与电荷守恒，求出最小正整数**净反应**；碱性模式按 `H+ + OH- -> H2O` 把 `H+` 转换为 `H2O`/`OH-` 并约消两侧同种辅助物。存在多组最简解或无法补全时返回 `422` 及具体原因。
+
 另提供**化学计量接口**：在配平结果基础上，按内置原子量表（H、C、N、O、Na、Mg、Al、S、Cl、K、Ca、Fe、Cu、Mn）换算投料物质的量，以反应进度最小值判定（可并列的）限制反应物，返回理论反应进度、各生成物理论产量与各反应物剩余量。全程 `Decimal` 计算，输出按请求 `precision` 四舍五入。
 
 以及**批次投料规划接口**：给定目标生成物的纯品质量与预计收率，反推理论反应进度，按配平系数求各反应物的化学计量摩尔数，再叠加每种原料的非负过量百分比、按纯度折算实际称量克数，返回配平方程、理论反应进度与逐原料投料规划。
@@ -92,6 +94,73 @@ curl -s http://localhost:8000/api/v1/balance \
 ```
 
 化学式语法错误返回 `400`。
+
+### `POST /api/v1/redox/balance` — 氧化还原自动补全
+
+已知物种两侧不必守恒：服务在**不改变已知物种所在侧**的前提下，仅引入 `H2O`、`H+`（`medium=acidic`，默认）或 `H2O`、`OH-`（`medium=basic`）补齐元素与电荷守恒，返回最大公约数约简后的**最小正整数净反应**。碱性模式先求酸性形式的解，再按 `H+ + OH- -> H2O` 把 `H+` 转换为 `H2O`/`OH-`，并约消两侧同种辅助物（与直接以 `H2O`/`OH-` 求解等价，且保持系数最简）。
+
+- 已知物种不得与 `H2O`、`H+`、`OH-` 等价（含 `H^+`、`HO-` 等等价写法）——它们由服务按需自动引入；如需固定其所在侧，请改用 `/api/v1/balance`。
+- 响应中的 `reactants`/`products` 为最终净反应两侧（已知物种保持原顺序在前，补全物种追加在后），`added_species` 单独列出新增辅助物种及其所在侧与系数（无需补全时为空列表）。
+
+```bash
+curl -s http://localhost:8000/api/v1/redox/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["MnO4-", "Fe^2+"], "products": ["Mn^2+", "Fe^3+"], "medium": "acidic"}'
+```
+
+响应（`200`）：
+
+```json
+{
+  "equation": "MnO4- + 5Fe^2+ + 8H+ -> Mn^2+ + 5Fe^3+ + 4H2O",
+  "medium": "acidic",
+  "reactants": ["MnO4-", "Fe^2+", "H+"],
+  "products": ["Mn^2+", "Fe^3+", "H2O"],
+  "coefficients": [1, 5, 8, 1, 5, 4],
+  "reactant_coefficients": [1, 5, 8],
+  "product_coefficients": [1, 5, 4],
+  "added_species": [
+    {"formula": "H+",  "side": "reactant", "coefficient": 8},
+    {"formula": "H2O", "side": "product",  "coefficient": 4}
+  ],
+  "elements": [
+    {"element": "Fe", "reactants": 5, "products": 5, "balanced": true},
+    {"element": "H",  "reactants": 8, "products": 8, "balanced": true},
+    {"element": "Mn", "reactants": 1, "products": 1, "balanced": true},
+    {"element": "O",  "reactants": 4, "products": 4, "balanced": true}
+  ],
+  "charge": {"reactants": 17, "products": 17, "balanced": true},
+  "balanced": true
+}
+```
+
+碱性介质（`H+` 转换为 `H2O`/`OH-` 并约消）：
+
+```bash
+curl -s http://localhost:8000/api/v1/redox/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["MnO4-", "SO3^2-"], "products": ["MnO2", "SO4^2-"], "medium": "basic"}'
+# -> 2MnO4- + 3SO3^2- + H2O -> 2MnO2 + 3SO4^2- + 2OH-
+#    added_species: H2O（反应物侧 ×1）、OH-（生成物侧 ×2）
+```
+
+错误返回：
+
+| 状态码 | 场景 |
+| --- | --- |
+| `400` | 化学式无法解析；已知物种与自动补全物种（`H2O`/`H+`/`OH-`）重复 |
+| `422` | 无法补全（无非零解，或已知物种系数无法化为全正）；存在多组最简解而无法唯一判定；`medium` 不是 `acidic`/`basic` |
+
+`422` 响应的 `detail` 附带零空间维数与具体原因，例如：
+
+```json
+{
+  "detail": {
+    "message": "存在多组最简解，无法唯一判定（零空间维数为 2）：请补充已知物种以约束反应",
+    "null_space_dim": 2
+  }
+}
+```
 
 ### `POST /api/v1/verify` — 校验系数
 
@@ -293,10 +362,11 @@ pytest                 # 运行测试
 app/
   parser.py         # 分子式解析：嵌套括号、结晶水、离子电荷
   balancer.py       # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
+  redox.py          # 氧化还原自动补全：H2O/H+/OH- 自由侧辅助列、酸性/碱性介质、净反应归侧
   stoichiometry.py  # 内置原子量表、投料换算、限制反应物、产量与剩余量、批次投料规划（Decimal）
   formula_infer.py  # 质量百分比 → 摩尔比 → 互质下标候选 → 经验式/分子式推断（Decimal）
   schemas.py        # 请求/响应模型
   main.py           # FastAPI 路由
-tests/test_api.py / tests/test_stoichiometry.py / tests/test_stoichiometry_plan.py / tests/test_formula_infer.py
+tests/test_api.py / tests/test_redox.py / tests/test_stoichiometry.py / tests/test_stoichiometry_plan.py / tests/test_formula_infer.py
 Dockerfile / docker-compose.yml
 ```

@@ -43,6 +43,48 @@ class BalanceResponse(BaseModel):
     balanced: bool
 
 
+class RedoxBalanceRequest(BaseModel):
+    reactants: list[str] = Field(
+        min_length=1,
+        description="已知反应物分子式列表（所在侧保持不变）",
+        examples=[["MnO4-", "Fe^2+"]],
+    )
+    products: list[str] = Field(
+        min_length=1,
+        description="已知生成物分子式列表（所在侧保持不变）",
+        examples=[["Mn^2+", "Fe^3+"]],
+    )
+    medium: Literal["acidic", "basic"] = Field(
+        default="acidic",
+        description=(
+            "介质：acidic 仅引入 H2O/H+ 补全；basic 将 H+ 转换为 "
+            "H2O/OH- 并约消两侧同种辅助物"
+        ),
+    )
+
+
+class AddedSpecies(BaseModel):
+    formula: str = Field(description="新增辅助物种分子式（H2O、H+ 或 OH-）")
+    side: Literal["reactant", "product"] = Field(description="辅助物种所在侧")
+    coefficient: int = Field(description="辅助物种系数（正整数）")
+
+
+class RedoxBalanceResponse(BaseModel):
+    equation: str
+    medium: Literal["acidic", "basic"] = Field(description="实际采用的介质（回显）")
+    reactants: list[str] = Field(description="最终反应物（已知物种 + 补全的辅助物种）")
+    products: list[str] = Field(description="最终生成物（已知物种 + 补全的辅助物种）")
+    coefficients: list[int] = Field(description="全部系数（先反应物后生成物）")
+    reactant_coefficients: list[int]
+    product_coefficients: list[int]
+    added_species: list[AddedSpecies] = Field(
+        description="新增辅助物种及其所在侧与系数（无需补全时为空列表）"
+    )
+    elements: list[ElementAccount] = Field(description="逐元素核算")
+    charge: ChargeAccount = Field(description="电荷核算")
+    balanced: bool
+
+
 class VerifyRequest(BaseModel):
     reactants: list[str] = Field(min_length=1, examples=[["H2", "O2"]])
     products: list[str] = Field(min_length=1, examples=[["H2O"]])
