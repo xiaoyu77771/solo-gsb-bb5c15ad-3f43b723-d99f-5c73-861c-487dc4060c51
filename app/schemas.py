@@ -43,6 +43,44 @@ class BalanceResponse(BaseModel):
     balanced: bool
 
 
+class RedoxBalanceRequest(BaseModel):
+    reactants: list[str] = Field(
+        min_length=1,
+        description="已知反应物物种（所在侧固定，补全时不移动）",
+        examples=[["MnO4-", "Fe^2+"]],
+    )
+    products: list[str] = Field(
+        min_length=1,
+        description="已知生成物物种（所在侧固定，补全时不移动）",
+        examples=[["Mn^2+", "Fe^3+"]],
+    )
+    medium: Literal["acidic", "basic"] = Field(
+        description="介质：acidic 酸性（辅助物种 H2O/H+），basic 碱性（辅助物种 H2O/OH-）"
+    )
+
+
+class AddedSpecies(BaseModel):
+    formula: str = Field(description="新增辅助物种分子式（H2O / H+ / OH-）")
+    side: Literal["reactants", "products"] = Field(description="新增辅助物种所在侧")
+    coefficient: int = Field(description="系数（正整数）")
+
+
+class RedoxBalanceResponse(BaseModel):
+    medium: str = Field(description="实际采用的介质（回显）")
+    equation: str = Field(description="补全后的净反应方程式")
+    reactants: list[str] = Field(description="最终反应物（已知物种 + 新增辅助物种）")
+    products: list[str] = Field(description="最终生成物（已知物种 + 新增辅助物种）")
+    coefficients: list[int] = Field(description="全部系数（先反应物后生成物）")
+    reactant_coefficients: list[int]
+    product_coefficients: list[int]
+    added_species: list[AddedSpecies] = Field(
+        description="新增辅助物种及所在侧、系数（已知物种中已有的不重复列出）"
+    )
+    elements: list[ElementAccount] = Field(description="逐元素核算")
+    charge: ChargeAccount = Field(description="电荷核算")
+    balanced: bool
+
+
 class VerifyRequest(BaseModel):
     reactants: list[str] = Field(min_length=1, examples=[["H2", "O2"]])
     products: list[str] = Field(min_length=1, examples=[["H2O"]])

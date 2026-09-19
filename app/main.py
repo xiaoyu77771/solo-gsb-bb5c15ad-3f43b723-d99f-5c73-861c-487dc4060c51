@@ -6,11 +6,14 @@ from fastapi import FastAPI, HTTPException
 from .balancer import BalanceError, balance_equation, verify_coefficients
 from .formula_infer import FormulaInferError, NoSolutionError, infer_formula
 from .parser import FormulaError
+from .redox import balance_redox
 from .schemas import (
     BalanceRequest,
     BalanceResponse,
     FormulaInferRequest,
     FormulaInferResponse,
+    RedoxBalanceRequest,
+    RedoxBalanceResponse,
     StoichiometryPlanRequest,
     StoichiometryPlanResponse,
     StoichiometryRequest,
@@ -30,10 +33,12 @@ app = FastAPI(
         "基于元素守恒矩阵（含电荷行）与有理数高斯消元零空间的精确配平服务。"
         "支持嵌套括号、点号结晶水与末尾离子电荷；并提供基于内置原子量表的"
         "化学计量计算（限制反应物、理论产量与剩余量）、反应批次投料规划"
-        "（由目标产量与收率反推各原料称量），以及由元素质量百分比"
-        "反推经验式/分子式的推断接口。"
+        "（由目标产量与收率反推各原料称量）、由元素质量百分比"
+        "反推经验式/分子式的推断接口，以及氧化还原反应自动补全接口"
+        "（已知物种所在侧固定，仅引入 H2O/H+/OH- 补齐守恒项，"
+        "支持酸性/碱性介质）。"
     ),
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -93,6 +98,33 @@ def verify(req: VerifyRequest) -> dict:
         )
     except FormulaError as exc:
         raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+
+
+@app.post(
+    "/api/v1/redox/balance",
+    response_model=RedoxBalanceResponse,
+    tags=["redox"],
+    summary="氧化还原反应自动补全（酸性/碱性介质）",
+    responses={
+        400: {"description": "化学式无法解析"},
+        422: {
+            "description": (
+                "存在多组最简解无法唯一判定，"
+                "或无法在不改变已知物种所在侧的前提下补全"
+            )
+        },
+    },
+)
+def redox_balance(req: RedoxBalanceRequest) -> dict:
+    try:
+        return balance_redox(req.reactants, req.products, req.medium)
+    except FormulaError as exc:
+        raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+    except BalanceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": exc.message, "null_space_dim": exc.nullity},
+        ) from exc
 
 
 @app.post(

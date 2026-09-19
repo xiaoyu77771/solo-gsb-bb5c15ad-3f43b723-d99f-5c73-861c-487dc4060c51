@@ -8,6 +8,8 @@
 
 以及**经验式推断接口**：由元素质量百分比反推经验式——先按内置原子量表换算摩尔比，再在 1～12 倍尺度内生成互质正整数下标候选，用候选式反算理论百分比并保留最大绝对偏差不超过 `tolerance` 者（并列时依次取总原子数较少、Hill 顺序字符串较小者）；提供实测摩尔质量时，按最接近的正整数倍给出分子式。
 
+以及**氧化还原自动补全接口**：给定两侧已知物种（所在侧固定）与介质（`acidic`/`basic`），仅引入 H2O、H+（酸性）或 H2O、OH-（碱性）作为可出现在任一侧的辅助物种，求出元素与电荷均守恒的最小正整数净反应；多组最简解无法唯一判定或无法补全时返回 `422` 并说明原因。
+
 ## 快速启动（单条命令）
 
 ```bash
@@ -107,6 +109,71 @@ curl -s http://localhost:8000/api/v1/verify \
 ```
 
 响应包含逐元素与电荷核算、`balanced` 结论，以及系数的 `gcd` 与是否已约简（`is_reduced`）。
+
+### `POST /api/v1/redox/balance` — 氧化还原自动补全
+
+给定两侧已知物种（**所在侧固定**，配平时不移动）与介质 `medium`（`acidic` 或 `basic`），仅引入辅助物种补齐守恒项，返回元素与电荷均守恒的**最小正整数净反应**：
+
+- 酸性（`acidic`）：辅助物种为 H2O、H+；碱性（`basic`）：辅助物种为 H2O、OH-（等价于先按酸性配平、再把 H+ 按 `H+ + OH- -> H2O` 折算并约消两侧同种辅助物）。
+- 已知物种中已有的辅助物种（如已把 H2O 写在某一侧）不会重复引入；辅助物种系数为零时不出现在结果中。
+- `added_species` 列出实际新增的辅助物种及其所在侧与系数；`reactants`/`products` 为补全后的完整两侧物种列表。
+
+```bash
+curl -s http://localhost:8000/api/v1/redox/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["MnO4-", "Fe^2+"], "products": ["Mn^2+", "Fe^3+"], "medium": "acidic"}'
+```
+
+响应（`200`）：
+
+```json
+{
+  "medium": "acidic",
+  "equation": "MnO4- + 5Fe^2+ + 8H+ -> Mn^2+ + 5Fe^3+ + 4H2O",
+  "reactants": ["MnO4-", "Fe^2+", "H+"],
+  "products": ["Mn^2+", "Fe^3+", "H2O"],
+  "coefficients": [1, 5, 8, 1, 5, 4],
+  "reactant_coefficients": [1, 5, 8],
+  "product_coefficients": [1, 5, 4],
+  "added_species": [
+    {"formula": "H2O", "side": "products", "coefficient": 4},
+    {"formula": "H+", "side": "reactants", "coefficient": 8}
+  ],
+  "elements": [
+    {"element": "Fe", "reactants": 5, "products": 5, "balanced": true},
+    {"element": "H",  "reactants": 8, "products": 8, "balanced": true},
+    {"element": "Mn", "reactants": 1, "products": 1, "balanced": true},
+    {"element": "O",  "reactants": 4, "products": 4, "balanced": true}
+  ],
+  "charge": {"reactants": 17, "products": 17, "balanced": true},
+  "balanced": true
+}
+```
+
+碱性介质（H+ 折算为 H2O/OH- 并约消）：
+
+```bash
+curl -s http://localhost:8000/api/v1/redox/balance \
+  -H 'Content-Type: application/json' \
+  -d '{"reactants": ["MnO4-", "SO3^2-"], "products": ["MnO2", "SO4^2-"], "medium": "basic"}'
+# -> 2MnO4- + 3SO3^2- + H2O -> 2MnO2 + 3SO4^2- + 2OH-
+```
+
+错误返回：
+
+| 状态码 | 场景 |
+| --- | --- |
+| `400` | 化学式无法解析 |
+| `422` | 存在多组最简解无法唯一判定（`null_space_dim` > 1）；守恒方程组无非零解（`null_space_dim` = 0）；已知物种系数异号或为零，无法在不改变其所在侧的前提下补全；`medium` 不是 `acidic`/`basic` |
+
+```json
+{
+  "detail": {
+    "message": "零空间维数为 2（必须恰好为 1 才能唯一判定），存在多组最简解，无法唯一补全",
+    "null_space_dim": 2
+  }
+}
+```
 
 ### `POST /api/v1/stoichiometry` — 化学计量
 
@@ -293,10 +360,11 @@ pytest                 # 运行测试
 app/
   parser.py         # 分子式解析：嵌套括号、结晶水、离子电荷
   balancer.py       # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
+  redox.py          # 氧化还原自动补全：H2O/H+/OH- 辅助列、介质折算、净反应组装
   stoichiometry.py  # 内置原子量表、投料换算、限制反应物、产量与剩余量、批次投料规划（Decimal）
   formula_infer.py  # 质量百分比 → 摩尔比 → 互质下标候选 → 经验式/分子式推断（Decimal）
   schemas.py        # 请求/响应模型
   main.py           # FastAPI 路由
-tests/test_api.py / tests/test_stoichiometry.py / tests/test_stoichiometry_plan.py / tests/test_formula_infer.py
+tests/test_api.py / tests/test_redox.py / tests/test_stoichiometry.py / tests/test_stoichiometry_plan.py / tests/test_formula_infer.py
 Dockerfile / docker-compose.yml
 ```
